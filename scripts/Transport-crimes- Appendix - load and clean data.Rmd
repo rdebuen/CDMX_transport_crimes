@@ -1,0 +1,253 @@
+---
+title: "Appendix - Cleaning data of thefts and robberies on transportation in Mexico City with R"
+author: "Rebeca de Buen Kalman"
+date: "5/8/2020"
+output: 
+  html_document:
+    theme: journal
+---
+
+In this Appendix I show the process I followed for preparing the data in my post *A quick glance at reported robberies and thefts on Mexico City's transportation system*. In the next Appendix, I show all of my code for the analysis and visualizations.
+
+The main data set I use here is the Mexico City [data on street-level crimes](https://datos.cdmx.gob.mx/explore/dataset/carpetas-de-investigacion-pgj-de-la-ciudad-de-mexico/information/?disjunctive.ao_hechos&disjunctive.delito) includes all of the crimes reported to this agency starting in January. This data is  updated monthly on the [Mexico City Open Data Portal](https://datos.cdmx.gob.mx/pages/home/). 
+
+Later in the analysis (see Appendix 2) I also use the shape-files for [Mexico City's neighborhoods](https://datos.cdmx.gob.mx/explore/dataset/coloniascdmx/export/), [metro lines](https://datos.cdmx.gob.mx/explore/dataset/lineas-de-metro/export/) and, [metro stations](https://datos.cdmx.gob.mx/explore/dataset/estaciones-metro/export/).  
+
+## R packages
+
+To clean, analyze and visulaize this data I used the following R packages from the Tidyverse:`readr`, `dplyr`, `forcats`, `ggplot2`, `lubridate`  `stringr`, `zoo` and  `sf`.
+
+```{r, warning = FALSE, message = FALSE}
+library(readr) # reading in data
+library(dplyr) # data manipulation
+library(forcats) # recoding variables
+library(lubridate) # date-time object manipulation
+library(stringr) # strings and regular expressions
+
+#(used in appendix 2 and main post)
+library(ggplot2) # visualization
+library(zoo) # moving average functions
+library(sf) # working with spatial objects
+```
+
+## Research questions
+Before jumping into the data, I brainstormed a set of questions to guide this analysis:
+
+- What kinds of crimes are reported on Mexico City's transportation system (both private cars and public transportation)?
+- How do the crimes reported vary by mode?
+- Have reported crimes increased  or decreased over time? Does this vary by mode?
+- What are the  months, days of the week and hours when crimes are more frequently reported on different modes of transportation?
+- For crimes committed on the Metro and Metrubus what are the most common stations committed?
+- For other modes, what neighborhoods are the most dangerous?
+- For most problematic neighborhoods, what are the days and times when more crimes are reported?
+
+
+## The data
+I read in the data and do some initial checks to get familiar with this data set:
+
+```{r, warning = FALSE, message = FALSE}
+#read in data
+crimes <- read_csv("../data/carpetas-de-investigacion-pgj-de-la-ciudad-de-mexico_2020-02-22 00_02.csv")
+```
+
+To start getting a feel for the data I look at the first few columns of data: 
+
+```{r, warning = FALSE, message = FALSE}
+#Visualize first few columns
+head(crimes)
+```
+
+
+I check for NAs in each column:
+
+```{r, warning = FALSE, message = FALSE}
+#count NAs i all columns
+crimes %>% sapply( function(x) sum(is.na(x)))
+```
+
+
+The data contains the following columns:
+```{r, warning = FALSE, message = FALSE}
+# Get column names
+colnames(crimes)
+```
+
+- **Ao_hechos:**  Year of crime. (typo in column name)
+- **mes_hechos:**  Month of crime.    
+- **fecha_hechos:** Date of crime.
+- **delito:** Crime.
+- **categoria_delito:**  Crime category.     
+- **fiscalia:**  Prosecution office.
+- **agencia:** Agency.
+- **unidad_investigacion:** Investigation Unit 
+- **alcaldia_hechos:** Municipality whee crime was committed.   
+- **colonia_hechos:** Neighborhood where crime was committed. 
+- **ao_inicio :** Year when investigation started    
+- **mes_inicio:**  Month when investigation started     
+- **fecha_inicio:** Date when investigation started .   
+- **geopoint:**  geo-location of crime.     
+- **colonia_hechos:** Neighborhood where crime was committed.  
+- **calle_hechos:**  Cross-street 1 
+- **calle_hechos2:**  Cross-street 2 
+- **latitud:**   Latitude      
+- **longitud:**  Longitude
+
+This first glance at the data reveals a few issues:
+
+- There is a lot of information that is repetitive (for example date time information, location information). 
+- There is a lot of data that is unlikely to be used in this analysis.
+- I also still some work needs to be done to identify crimes that are committed on different modes of transportation. What types of crimes are included?
+- The data needs to be translated into english. I will do this further down the line so that I only translate the variables I need.
+
+
+# Data cleaning
+
+First, I work to identify the crimes committed on any mode of transportation. For this, I first look at the unique values of the `Delito`(crime) variable for clues using `unique(victimas$Delito)`. This reveals 277 unique categories. Manually sifting through these data I spotted some categories that include the names of different modes. To make sure I capture them all, I look for all the categories that mention modes of transportation using regular expressions.
+
+```{r, warning = FALSE, message = FALSE}
+#list of modes of transportation
+modes <- c("METRO", "METROBUS", "TAXI", "PESERO", "TRANSPORTE PÚBLICO", "AUTOBÚS FORÁNEO", "ECOBUS", "RTP", "TROLEBUS", "TREN LIGERO", "TROLEBUS", "VEHICULO", "TREN SUBURBANO", "TAXI")
+
+#regular expression to help identify crimes that include any of te elements in mode
+modes_regex <- paste(modes, collapse = "|")
+
+# check if any of the words in modes are inside the delito category names
+unique(crimes$delito) %>% str_subset(modes_regex)
+```
+
+This is a good approximation, but I still end up with many categories that are not reported by people using different modes of transportation. However, a close look at this data reveals that the categories I am interested include the term *passenger* (*PASAJERO*). I look at all of the `crime` categories that include this term. 
+
+```{r, warning = FALSE, message = FALSE}
+unique(crimes$delito) %>% str_subset("PASAJERO")
+```
+
+With this information, I am ready to subset the data. I notice that the crimes reported by passengers of different modes of transportation are all related to robberies. There is also information on whether the robbery was violent and non-violent. This is information that will ned to be parsed out 
+
+```{r, warning = FALSE, message = FALSE}
+# filter out crimes that include the word "PASAJERO" but not "TRANSEUNTE"
+transport_crimes <- crimes %>% filter(str_detect( delito, "PASAJERO") & !str_detect( delito, "TRANSEUNTE"))
+```
+
+The data set includes many variables I don't need so I select the variables I am interested in. Based on my research questions I select the following variables and rename them in english to ease the rest of the analysis: `crime` = `delito`, `crime_date` = `fecha_hechos`, `lat` = `latitud`, `lon` = `longitude`, `municipality` = `alcaldia_hechos`, `neihborhood`= `ColoniaHechos`:
+
+```{r, warning = FALSE, message = FALSE}
+#select desired variables and translate variable names
+transport_crimes <- transport_crimes %>% select(crime = delito, 
+                                                      datetime = fecha_hechos, 
+                                                      lat = latitud, 
+                                                      lon = longitud,
+                                                      municipality = alcaldia_hechos, 
+                                                      neighborhood = colonia_hechos) 
+```
+
+
+As I mentioned, the `crime` variable contains two important pieces of information that still needs to be separated. The category includes the mode of transportation where victims were robbed whether the robbery was violent. To sparate this information I create two additional categorical variables: `transp_mode` to indicate the mode, and `violence`, which indicates whether or not the robbery was violent or non-violent. With this information parsed out, I can also remove the `crime` variable from my data set. I parse these put with the help of regular expressions.
+
+```{r, warning = FALSE, message = FALSE}
+transport_crimes <- transport_crimes %>% 
+                      #create categorical transp_mode variable. 
+                        mutate( transp_mode = factor(case_when(
+                            is.na(crime) ~ NA_character_,
+                            str_detect(crime, "METROBUS") ~ "METROBUS",
+                            str_detect(crime, "METRO") ~ "METRO",
+                            str_detect(crime, "PESERO") ~ "PESERO",
+                            str_detect(crime, "TRANSPORTE PÚBLICO") ~ "TRANSPORTE PUBLICO",
+                            str_detect(crime, "AUTOBÚS FORÁNEO") ~ "AUTOBUS FORANEO",
+                            str_detect(crime, "AUTOBUS FORANEO") ~ "AUTOBUS FORANEO",
+                            str_detect(crime, "ECOBUS") ~ "ECOBUS",
+                            str_detect(crime, "RTP") ~ "RTP",
+                            str_detect(crime, "TREN LIGERO") ~ "TREN LIGERO",
+                            str_detect(crime, "TROLEBUS") ~ "TROLEBUS",
+                            str_detect(crime, "VEHICULO") ~ "VEHICULO",
+                            str_detect(crime, "TREN SUBURBANO") ~ "TREN SUBURBANO",
+                            str_detect(crime, "TAXI") ~ "TAXI"
+                          ))) %>% 
+                    # create categorical variable for violence
+                      mutate( violence = factor(case_when(
+                        is.na(crime) ~ NA_character_,
+                        str_detect(crime, "CON VIOLENCIA") ~ "Yes",
+                        str_detect(crime, "SIN VIOLENCIA") ~ "No"
+                      ))) %>% 
+
+                    # remove crime column from the data
+                    select(-crime)
+```
+
+I  check how many data points are in each `transp_mode` category to see if I should create a an `OTHER` category. I also note that there is a category called `TRANSPORTE PUBLICO` where I don't know the specific mode.
+
+```{r, warning = FALSE, message = FALSE}
+ transport_crimes %>% count() 
+ transport_crimes %>% group_by(transp_mode) %>% count() 
+
+```
+I  collapse the `transp_mode` categories that have less then 100 data points and the unspecified public transport category into a new `OTHER` Category. I will also use this step to translate the names of these categories.
+
+```{r, warning = FALSE, message = FALSE}
+
+transport_crimes <- transport_crimes %>% mutate(transp_mode = fct_recode(transp_mode, Metro = "METRO", 
+                                                                    Car = "VEHICULO", 
+                                                                    Pesero =  "PESERO",
+                                                                    Other = "TRANSPORTE PUBLICO", 
+                                                                    Taxi =  "TAXI", 
+                                                                    Other = "RTP", 
+                                                                    Metrobus  = "METROBUS", 
+                                                                    Other = "TREN LIGERO", 
+                                                                    Other = "TROLEBUS", 
+                                                                    Other = "AUTOBUS FORANEO",   
+                                                                    Other = "TREN SUBURBANO",     
+                                                                    Other = "ECOBUS"))
+
+# smell test for recode
+ transport_crimes %>% group_by(transp_mode) %>% count() 
+
+```
+ 
+
+I check for NAs in each column. 
+```{r, warning = FALSE, message = FALSE}
+sapply(transport_crimes, function(x) sum(is.na(x)))
+
+```
+
+I check on how the data is distributed over time
+```{r, warning = FALSE, message = FALSE}
+# group by years and count to check distribution of data over time
+transport_crimes %>% select(transp_mode, datetime) %>% 
+                      mutate(year = year(datetime)) %>% 
+                      group_by(year) %>% count()
+```
+
+For practical purposes, I will focus on the the data for 2016-2019. These years contain a larger amount of reports and are the most recent years with a full year's worth of data.
+
+```{r, warning = FALSE, message = FALSE}
+# Take transport crimes 
+transport_crimes <- transport_crimes %>% 
+                      mutate(week = week(datetime), year = year(datetime)) %>% 
+                      filter (year > 2015) %>% filter(!is.na(transp_mode))
+```
+
+I add a few mre variables that I will need in the visualization portion. Categorical variables for `year`, `month`, `weekday`, and `hour`. I also add a variable with the date.
+```{r, warning = FALSE, message = FALSE}
+transport_crimes <- transport_crimes %>% mutate(
+                                               year = as.factor(year(datetime)), 
+                                                month = as.factor(month(datetime)), 
+                                                day = date(datetime),
+                                                weekday = as.factor(wday(datetime)),
+                                                hour = as.factor(hour(datetime))
+                                                )                 
+```
+
+Finally, I look at the data set to see what I ended up with.
+```{r, warning = FALSE, message = FALSE}
+head(transport_crimes)
+```
+
+I am now in better shape to answer my research questions. In the following sections, As I explore the data, I continue to manipulate it as needed. To keep things simple, I will do the second part of this analysis in a separate Appendix.
+
+An important limitation of how this data was filtered is that it only captures reports of crime that mention a mode of transportation. There may be other crimes that occur on transportation, like sexual assault that are not captured here. This analysis is therefore limited to robberies and thefts, not to all crimes.
+
+```{r}
+save(transport_crimes, file = "../processed_data/transport_crimes.Rdata")
+```
+
+

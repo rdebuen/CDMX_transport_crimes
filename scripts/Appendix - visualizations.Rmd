@@ -1,0 +1,462 @@
+---
+title: "Appendix - Visualizing thefts and robberies on transportation in Mexico City with R"
+author: "Rebeca de Buen Kalman"
+date: "5/15/2020"
+output: html_document
+---
+
+```{r, warning = FALSE, message = FALSE}
+library(readr) # reading in data
+library(dplyr) # data manipulation
+library(forcats) # recoding variables
+library(ggplot2) # visualization
+library(lubridate) # date-time object manipulation
+library(stringr) # strings and regular expressions
+library(zoo) # moving average functions
+library(sf) # working with spatial objects
+```
+
+```{r}
+load(file = "../processed_data/transport_crimes.Rdata")
+```
+In this Appendix I show the code for the plots in the post *A quick glance at reported robberies and thefts on Mexico City's transportation system*. In the previous Apendix I laied out the process followed for preparing the data.
+
+## Research questions
+Before jumping into the data, I brainstormed a set of questions to guide this analysis:
+
+- What kinds of crimes are reported on Mexico City's transportation system (both private cars and public transportation)?
+- How do the crimes reported vary by mode?
+- Have reported crimes increased  or decreased over time? Does this vary by mode?
+- What are the  months, days of the week and hours when crimes are more frequently reported on different modes of transportation?
+- For crimes committed on the Metro and Metrubus what are the most common stations committed?
+- For other modes, what neighborhoods are the most dangerous?
+- For most problematic neighborhoods, what are the days and times when more crimes are reported?
+
+## Analysis and visualization
+
+ *What kinds of crimes are committed on Mexico City's transportation system (both private cars and public transportation)?How do the crimes reported vary by mode?*
+
+The crimes included in the data set for modes of transportation are violent robberies and non-violent thefts. I explore how these are distributed across modes for the entire time period (2016-2019).
+
+```{r, warning = FALSE, message = FALSE}
+# I group by mode and count so that my categorical variable is ordered by the frequency of crimes
+mode_levels <- transport_crimes %>% group_by(transp_mode) %>% count() %>% arrange(n) %>% pull(transp_mode)
+
+# I make a simple frequency plot to vizualize how many crimes are reported for each mode. I separate these by violent and non-violent crime.
+transport_crimes %>% select(transp_mode, violence) %>% 
+                      #order frequency plot modes from highest to lowest counts
+                      mutate(transp_mode = factor(transp_mode, levels=rev(mode_levels))) %>% 
+                      ggplot(aes(x=transp_mode, fill = violence)) + 
+                      geom_bar() + 
+                      # fix labels and legend
+                      labs(
+                      title = "Number of reported robberies and thefts by mode of transport",
+                      subtitle = "Mexico City 2016-2019",
+                      caption = "Source: Carpetas de Investigacion PGJ, Ciudad de México") +
+                      xlab("Mode") +
+                      ylab("Number of reports") +
+                      scale_fill_discrete(name = "Violent?") +
+                      theme_minimal() +
+                      theme(legend.position= c(0.2,-0.12), legend.direction="horizontal") +
+                      theme(axis.text.x = element_text(angle = 30)) +
+                      theme(axis.title.x = element_blank())
+                    
+  
+``` 
+Now by year:
+
+```{r, warning = FALSE, message = FALSE}
+#totals <- transport_crimes %>% group_by(year) %>% count()
+
+year <- c(2016, 2017, 2018, 2019) 
+x_coords <- c(5, 5, 5, 5)
+y_coords <- c(3500, 3500, 3500, 3500)
+text <- c("Total: 4,316", 
+          "Total: 6,838", 
+          "Total: 12,440",
+          "Total: 12,292")
+
+year_totals <- data.frame(year, x_coords, y_coords, text)
+
+transport_crimes %>% select(transp_mode, violence, year) %>% 
+                      #order frequency plot modes from highest to lowest counts
+                      mutate(transp_mode = factor(transp_mode, levels=rev(mode_levels))) %>% 
+                      ggplot(aes(x=transp_mode, fill = violence)) + 
+                      geom_bar() + 
+                      geom_text(data = year_totals, 
+                                mapping = aes(x = x_coords, y = y_coords, label = text), 
+                                inherit.aes = FALSE, size = 3) +
+                      facet_wrap(~year) +
+                      # fix labels and legend
+                      labs(
+                      title = "Number of reported robberies by mode of transport",
+                      subtitle = "Mexico City 2016-2019",
+                      caption = "Source: Carpetas de Investigacion PGJ, Ciudad de México") +
+                      xlab("Mode") +
+                      ylab("Number of reports") +
+                      scale_fill_discrete(name = "Violent?") +
+                      theme_minimal() +
+                      theme(legend.position= c(0.2,-0.13), legend.direction="horizontal") +
+                      theme(axis.text.x = element_text(angle = 30)) +
+                      theme(axis.title.x = element_blank())
+                                
+  
+```
+
+* Have reported crimes increased  or decreased over time? Does this vary by mode?*
+
+```{r, warning = FALSE, message = FALSE}
+transport_crimes %>%  
+  select(transp_mode, violence, day) %>% 
+  group_by(day, violence, transp_mode) %>% count() %>% ungroup() %>%
+  group_by(transp_mode, violence) %>%
+  arrange(day) %>% # Make sure days are in order for rolling mean
+  mutate(avg_n_7 = rollmean(n, 14, fill = c(NA, "extend", NA)))  %>% # 14 day rolling mean
+                    ggplot(aes(x = day, y = avg_n_7, color = violence, group = violence)) + geom_line() + 
+                    facet_grid(transp_mode ~ .) +
+                    scale_x_date(date_breaks = "3 months", date_labels = "%b-%Y") +
+                    ylab("Number of reports") + xlab("Time") +
+                    labs(
+                    title = "Number of daily reported robberies and thefts over time by mode of transport",
+                      subtitle = "Mexico City 2016-2019",
+                      caption = "Source: Carpetas de Investigacion PGJ, Ciudad de México") +
+                      scale_color_discrete(name = "Violent?") +
+                    theme_minimal() +
+                    theme(strip.text = element_text(size = 7)) +
+                    theme(axis.title.x = element_blank()) + 
+                    theme(legend.position= c(0.2,-0.21), legend.direction="horizontal") +
+                    theme(axis.text.x = element_text(angle = 90)) 
+
+```
+ 
+```{r, warning = FALSE, message = FALSE}
+ transport_crimes %>% select(violence, year, month, transp_mode) %>% 
+                    group_by(year, month, transp_mode) %>%
+                    count(month) %>%
+                    ggplot(aes(x= month, y = n, group = year, color = year))  + geom_line() +
+                    facet_wrap(~transp_mode)  +
+                    labs(title = "Number of reported robberies and thefts by month and year",
+                      subtitle = "Mexico City 2016-2019",
+                      caption = "Source: Carpetas de Investigacion PGJ, Ciudad de México") +
+                      xlab("Month") +
+                      ylab("Number of reports") + 
+                    scale_x_discrete(labels=c("1" = "January",
+                                              "2" = "February", 
+                                              "3" = "March",
+                                              "4" = "April", 
+                                              "5" = "May", 
+                                              "6" = "June", 
+                                              "7" = "July",
+                                              "8" = "August",  
+                                              "9" = "September" , 
+                                              "10" = "October", 
+                                              "11" = "November", 
+                                              "12" = "December"))  + 
+                    theme_minimal() +
+                    theme(axis.text.x = element_text(angle = 90)) + 
+                    theme(legend.position= c(0.2,-0.215), legend.direction="horizontal") +
+                    theme(axis.title.x = element_blank())
+```
+
+*What are the  months, days of the week and hours when crimes are more frequently committed on different modes of transportation?*
+
+```{r, warning = FALSE, message = FALSE}
+transport_crimes %>% select(violence, month, transp_mode, year) %>% 
+                    group_by(violence, month, transp_mode, year) %>%
+                    ggplot(aes(x= month, group = violence, fill = violence))  + 
+                    geom_bar() +
+                    facet_grid(transp_mode ~ year) +
+                    labs(title = "Number of reported robberies and thefts by month and year",
+                      subtitle = "Mexico City 2016-2019",
+                      caption = "Source: Carpetas de Investigacion PGJ, Ciudad de México") +
+                      ylab("Number of reports") + 
+                    scale_x_discrete(labels=c("1" = "January", 
+                                              "2" = "February", 
+                                              "3" = "March",
+                                              "4" = "April", 
+                                              "5" = "May", 
+                                              "6" = "June", 
+                                              "7" = "July",
+                                              "8" = "August", 
+                                              "9" = "September" , 
+                                              "10" = "October", "11" =
+                                                "November", 
+                                              "12" = "December"))  + 
+                    scale_fill_discrete(name = "Violent?") + theme(axis.text=element_text(size=7)) +
+                    theme_minimal() + 
+                    theme(axis.text.x = element_text(angle = 90)) + 
+                    theme(legend.position= c(0.2,-0.20), legend.direction="horizontal") +
+                    theme(axis.title.x = element_blank())
+```
+
+
+```{r, warning = FALSE, message = FALSE}
+transport_crimes %>% select(transp_mode, violence, weekday, year) %>%
+                    group_by(violence, weekday, transp_mode) %>%
+                    ggplot(aes(x= weekday, group = violence, fill = violence))  +
+                    geom_bar() + 
+                    facet_grid(year~transp_mode)  +
+                      labs(title = "Number of reported robberies and thefts by weekday and year",
+                      subtitle = "Mexico City 2016-2019",
+                      caption = "Source: Carpetas de Investigacion PGJ, Ciudad de México") +
+                      ylab("Number of reports") +
+                    scale_fill_discrete(name = "Violent?") +
+                    scale_x_discrete(labels=c("1" = "Sunday",
+                                              "2" = "Monday",
+                                              "3" = "Tuesday",
+                                              "4" = "Wednesdy", 
+                                              "5" = "Thursday", 
+                                              "6" = "Friday", 
+                                              "7" = "Saturday"))  +
+                    scale_fill_discrete(name = "Violent?") +
+                    theme_minimal() +
+                    theme(axis.title.x = element_blank()) +
+                    theme(strip.text = element_text(size = 7)) + 
+                    theme(axis.text.x = element_text(angle = 90)) + 
+                    theme(legend.position= c(0.15,-0.23), legend.direction="horizontal") 
+```
+
+```{r, warning = FALSE, message = FALSE}
+ transport_crimes %>%  select(transp_mode, datetime, violence) %>% 
+                    mutate(hour = hour(datetime), year = year(datetime)) %>% 
+                    ggplot(aes(x = hour, fill = violence)) + geom_bar() +
+                    facet_grid(year~transp_mode) +
+                      labs(title = "Number of reported robberies and thefts by hour of day and year",
+                      subtitle = "Mexico City 2016-2019",
+                      caption = "Source: Carpetas de Investigacion PGJ, Ciudad de México") +
+                      ylab("Number of reports") + 
+                      scale_x_continuous(breaks = c(0,5,10,15,20), labels= c(`0` = "00:00", `5` = "5:00", 
+                                                                             `10` = "10:00", `15`= "15:00", 
+                                                                             `20` = "20:00")) + 
+                    scale_fill_discrete(name = "Violent?") +
+                    theme_minimal() +
+                    theme(axis.text.x = element_text(angle = 90)) +
+                    theme(axis.title.x = element_blank()) + 
+                    theme(axis.text=element_text(size=7)) + 
+                    theme(legend.position= c(0.15,-0.12), legend.direction="horizontal") +
+                    theme(strip.text.x = element_text(size = rel(0.6))) 
+```
+
+
+*For crimes committed on the Metro what are the most common stations where they are committed?*
+
+To explore questions related to locations, I will use the additional data sets that include shapefiles for Mexico City Neighborhoods, Transit (Metro and Metrobus) Lines, and Transit Stations. 
+
+```{r, warning = FALSE, message = FALSE}
+# Load neighborhood ("colonias") shapefiles
+colonias <- st_read("../data/coloniascdmx.shp", quiet = TRUE) %>% 
+  select(name = nombre, geometry) %>% 
+  st_transform(4485)
+
+# glance at the data
+head(colonias)
+```
+
+```{r, warning = FALSE, message = FALSE}
+# make lat and lon into gemetrical object sf can work with
+transport_crimes_geolocated <- transport_crimes %>% 
+  filter(!is.na(lat)) %>% 
+  st_as_sf(coords = c("lon", "lat"), crs=4326) %>% 
+  st_transform(4485)
+```
+
+```{r, warning = FALSE, message = FALSE}
+metro_lines <- st_read("../data/lineas-de-metro/lineas-de-metro.shp", quiet = TRUE) %>% st_transform(4485) %>% 
+                    mutate(line = fct_recode(name, "Line 1" = "Línea 1", 
+                                               "Line 2" = "Línea 2",
+                                               "Line 3" = "Línea 3",
+                                               "Line 4" = "Línea 4",
+                                               "Line 5" = "Línea 5",
+                                               "Line 6" = "Línea 6",
+                                               "Line 7" = "Línea 7",
+                                               "Line 8" = "Línea 8",
+                                               "Line 9" = "Línea 9",
+                                               "Line A" = "Línea A",
+                                               "Line B" = "Línea B",
+                                               "Line 12" = "Línea 12")) %>% 
+                                              select(-name)
+                           
+metro_stations <- st_read("../data/estaciones-metro/estaciones-metro.shp", quiet = TRUE) %>%
+  st_transform(4485) %>% 
+  st_buffer(dist = units::as_units(250, "m"))
+```
+
+Plot the points where crimes are reported over the metro lines
+```{r, warning = FALSE, message = FALSE}
+
+metro_crimes <- transport_crimes_geolocated %>%
+  filter(transp_mode == "Metro")
+cols <- c("Line 1" = "hotpink1", 
+          "Line 2" = "blue", 
+          "Line 3" = "olivedrab", 
+          "Line 4" = "cadetblue1", 
+          "Line 5" = "yellow",
+          "Line 6" = "red",
+          "Line 7" = "orange", 
+          "Line 8" = "darkgreen", 
+          "Line 9" = "brown", 
+          "Line A" = "purple", 
+          "Line B" = "grey69", 
+          "Line 12" = "darkgoldenrod")
+
+violence.labs <- c(Yes = "Violent", No = "Non-violent")
+
+ggplot(colonias) + 
+  geom_sf(size = 0.1) + 
+  geom_sf(data = metro_lines, aes(color = line), size = 1) + 
+  scale_colour_manual(values = cols) + 
+  geom_sf(data=metro_crimes,  color = "black", size = 0.4, alpha = 0.5) +
+    facet_wrap(~violence, labeller = labeller(violence = violence.labs)) +
+  theme_void() + theme(legend.title = element_blank()) +
+  theme(legend.position= "bottom", 
+        legend.direction="horizontal")
+```
+
+
+```{r}
+colonias_crimes <- colonias %>% st_join(metro_crimes) %>% filter()
+
+colonias_counts <- colonias_crimes %>% 
+  filter(!is.na(name)) %>% 
+  st_drop_geometry() %>% 
+  group_by(name) %>% 
+  summarize(n = n()) %>% 
+  full_join(colonias %>% 
+              filter(!is.na(name)) %>%
+              group_by(name) %>% 
+              slice(1L) %>% 
+              select(name, geometry)) %>%
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  st_as_sf()
+
+colonias_counts %>% ggplot(aes(fill = n)) + 
+  geom_sf(size = 0.1) + 
+  scale_fill_gradient(low = "white", high = "red", 
+                      na.value = NA, trans = "log", 
+                      breaks = c(1, 7, 50, 400)) + theme_void() +
+    geom_sf(data = metro_lines, aes(color = line), 
+            size = 0.5, inherit.aes = FALSE) +
+  scale_colour_manual(values = cols) +
+     theme(legend.title = element_blank()) +
+  theme(legend.position= "bottom", legend.direction="horizontal")
+```
+
+```{r, warning = FALSE, message = FALSE}
+station_crimes <- metro_crimes %>% st_join(metro_stations)
+station_counts <- station_crimes %>% 
+  st_drop_geometry() %>% 
+  group_by(violence, stop_name) %>% 
+  summarize(n = n()) %>% arrange(desc(n, by_group = TRUE)) %>%
+  mutate(stop_name = str_remove_all(stop_name, "[_1234567890]")) %>% 
+  ungroup()
+
+top_violent_stations <- station_counts %>% select(stop_name, violence, n) %>% 
+  filter(!is.na(stop_name), violence == "Yes") %>% 
+  group_by(stop_name) %>% slice(1)  %>% 
+  arrange(desc(n, by_group = TRUE)) %>% 
+  ungroup() %>% 
+  select(-violence) %>% 
+  top_n(10) 
+
+
+top_nonviolent_stations <- station_counts %>% 
+  select(stop_name, violence, n) %>% 
+  filter(!is.na(stop_name), violence == "No") %>% 
+  group_by(stop_name) %>% 
+  slice(1)  %>% 
+  arrange(desc(n, by_group = TRUE)) %>% 
+  select(-violence) %>% 
+  top_n(10)
+  
+
+```
+
+
+
+```{r}
+
+# Function to count number of reports by neighborhood and prepare for map 
+mode_crimes_counts <- function(mode){
+  #filter out the reports of the chosen mode
+mode_crimes <- transport_crimes_geolocated %>% filter(transp_mode == mode)
+# spatial join with the neihborhoods data
+colonias_crimes <- colonias %>% st_join(mode_crimes)
+# count reports by neighborhood
+colonias_counts <- colonias_crimes %>% 
+  filter(!is.na(name)) %>% 
+  st_drop_geometry() %>% 
+  group_by(name) %>% 
+  summarize(n = n()) %>% 
+  full_join(colonias %>% 
+              filter(!is.na(name)) %>%
+              group_by(name) %>% 
+              slice(1L) %>% 
+              select(name, geometry)) %>%
+  mutate(n = ifelse(is.na(n), 0, n)) %>%
+  st_as_sf()
+return(colonias_counts)
+}
+```
+
+```{r}
+mode_crimes_counts("Car")
+```
+
+```{r, warning = FALSE, message = FALSE, echo=FALSE}
+
+# Function to count top 10 neighborhoods for a given mode
+top_10_neighborhoods <- function(mode){
+  top_10 <- mode_crimes_counts(mode) %>% 
+    st_drop_geometry() %>% 
+    arrange(desc(n, by_group = TRUE)) %>% 
+    top_n(10)
+  return(top_10)
+}
+```
+
+```{r}
+top_10_neighborhoods("Metro")
+
+```
+
+
+
+```{r}
+
+# Function to map neighborhood reports for a given mode
+mode_crimes_map <- function(mode){
+  colonias_counts <- mode_crimes_counts(mode)
+colonias_counts %>% ggplot(aes(fill = n)) + 
+  geom_sf(size = 0.1) + 
+  scale_fill_gradient(low = "white", high = "red", na.value = NA, 
+                      trans = "log", breaks = c(1, 30, 100))  + 
+  theme_void() + 
+   theme(legend.title = element_blank()) +
+  labs(title = paste0("Number of reported robberies and thefts by ", mode, " users"),
+                      subtitle = "Mexico City 2016-2019",
+                      caption = "Source: Carpetas de Investigacion PGJ, Ciudad de México")
+}
+```
+
+
+```{r}
+top_10_neighborhoods("Pesero")
+
+```
+
+```{r}
+#compute a different way (colonias or neighborhoods have slightly different names and divisions in shapefiles than admin report)
+transport_crimes %>% filter(transp_mode == "Car") %>% 
+  group_by( municipality) %>% 
+  count() %>% 
+  arrange(desc(n)) %>% 
+  head(10)
+```
+
+```{r}
+mode_crimes_map("Car")
+```
+
+```{r}
+mode_crimes_map("Pesero")
+```

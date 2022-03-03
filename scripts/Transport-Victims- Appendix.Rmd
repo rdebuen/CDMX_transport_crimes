@@ -1,0 +1,283 @@
+---
+title: "A quick glance at reported robberies in Mexico City’s transportation system"
+author: "Rebeca de Buen Kalman"
+date: "5/8/2020"
+output: 
+  html_document:
+    theme: journal
+---
+
+# Appendix: Exploring reported robberies on Mexico City's transportation system with R
+
+## The data 
+
+The Mexico City [data on victims street-level crimes](https://datos.cdmx.gob.mx/explore/dataset/carpetas-de-investigacion-pgj-cdmx/table/) includes all of the crimes reported to this agency starting in 2016. This data is periodically updated in the [Mexico City Open Data Portal](https://datos.cdmx.gob.mx/pages/home/)
+
+There is a spanglish component to this analysis because I am writing in English but my data is in Spanish. For now I will translate parts I need as I go.
+
+To analyze this data I used the following R packages from the Tidyverse `dplyr`, `readr`, `ggplot2`, `stringr`, `forcats`, `sf` and `lubridate`. 
+
+```{r, warnings = FALSE, message = FALSE}
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(forcats)
+library(sf)
+```
+
+I downloaded the historical victims data from the Mexico City Open Data portal and loaded it here.
+```{r, warnings = FALSE, message = FALSE}
+victims <- read_csv('../data/victimas-en-carpetas-de-investigacion-pgj.csv')
+```
+
+To start getting a feel for the data I look at the first few columns of data and glance at the column names.
+
+```{r}
+#Visualize first 10 columns
+head(victims)
+
+# Get column names
+colnames(victims)
+```
+
+The data contains the following columns:
+
+-  **idCarpeta:**  ID number of the opened investigation file of the reportd crime.     
+- **Año_inicio:**  Year when the file was opened.    
+- **Mes_inicio:**  Month when the file was opened.   
+- **FechaInicio:** Date when the file was opened.
+- **Delito:** Crime.
+- **Categoria:**  Category.     
+- **Sexo:**  Sex.          
+- **Edad:**  Age.          
+- **TipoPersona:** Type of person (legal clasification).    
+- **CalidadJuridica:** Legal classification.
+- **Competencia:** Legal Classification.    
+- **Año_hecho:**  Year of crime.     
+- **Mes_hecho:**  Month of crime.   
+- **FechaHecho:** Date of crime.      
+- **HoraHecho:**  Time of crime.    
+- **HoraInicio:**   Time when the file was opened.   
+- **geopoint:**  geo-location of crime.     
+- **AlcaldiaHechos:** Municipality whee crime was committed. 
+- **ColoniaHechos:** Neighborhood where crime was committed.  
+- **Calle_hechos:**  Cross-street 1 
+- **Calle_hechos2:**  Cross-street 2 
+- **latitud:**   Latitude      
+- **longitud:**  Longitude
+
+This first glance at the data reveals a few issues:
+
+- There is a lot of information that is repetitive (for example date time information, location information). 
+- There is a lot of data that is unlikely to be used in this analysis.
+- I will need to rework some of the data to make it usable for this analysis. For example, we don't have a single date-time object to work with.
+- I also still need to identify the crimes that are committed on public transportation.
+
+# Research questions
+Before jumping into the data, 
+
+# Data cleaning
+
+The objective of this section is to work towards a data set that has the variables I need in the right format to answer my questions.
+
+The first thing I will try to figure out is how to identify the crimes committed on any mode of transportation. For this, I first look at the unique values of the `Delito`(crime) variable for clues using `unique(victimas$Delito)`. This reveals 277 unique categories. Manually sifting through these data I spotted some categories that include different modes. To make sure I capture them al, I look for all the categories that mention modes of transportation.
+
+```{r, warnings = FALSE}
+modes <- c("METRO", "METROBUS", "TAXI", "PESERO", "TRANSPORTE PÚBLICO", "AUTOBÚS FORÁNEO", "ECOBUS", "RTP", "TROLEBUS", "TREN LIGERO", "TROLEBUS", "VEHICULO", "TREN SUBURBANO", "TAXI")
+modes_regex <- paste(modes, collapse = "|")
+
+# check if any of the words in modes are inside the delito category names
+unique(victims$Delito) %>% str_subset(modes_regex)
+```
+
+This is a good approximation, but I end up with many categories that don't reflect the type of crimes that I am looking for. However, a close look at this data reveals that the categories I am interested include the term *passenger* except for assaults on Taxis. 
+
+```{r}
+unique(victims$Delito) %>% str_subset("PASAJERO")
+```
+
+With this information, I am ready to subset the data. I notice that the crimes reported by passengers of different modes of transportation are all related to robberies.
+
+```{r}
+transport_victims <- victims %>% filter(str_detect( Delito, "PASAJERO") | str_detect(Delito, "TAXI"))
+
+head(transport_victims)
+```
+
+I still have a lot of information I don't need so I will take only the variables I am interested in. Based on my research questions I will take  the following variables and rename them in english to ease the rest of the analysis: `crime` = `Delito`,  `sex` = `Sexo`, `age` = `Edad`, `crime_date` = `FechaHecho`, `crime_time` = `HoraHecho`, `lat` = `latitud`, `lon` = `longitude`, `municipality` = `AlcaldiaHechos`, `neihborhood`= `ColoniaHechos`:
+
+
+```{r}
+transport_victims <- transport_victims %>% select(crime = Delito, 
+                                                      sex = Sexo, 
+                                                      age = Edad, 
+                                                      crime_date = FechaHecho, 
+                                                      crime_time = HoraHecho,
+                                                      lat = latitud, 
+                                                      lon = longitud,
+                                                      municipality = AlcaldiaHechos, 
+                                                      neighborhood = ColoniaHechos) 
+```
+
+Next, I combine the `crime_date` and `crime_time` variables into a single datetime object and remove these columns.
+
+
+```{r}
+transport_victims <- transport_victims%>% 
+                        #fix date into unique datetime column, remove ld date, time columns
+                        mutate(datetime = dmy_hms(paste0(crime_date, " ", crime_time ))) %>% 
+                        select(-crime_date, -crime_time) 
+```
+The `crime` variable contains two important pieces of information that needs to be separated. The category includes the mode of transportation where victims were robbed and whether the robbery was violent. To sparate this informetion I create two additional categorical variables. `mode` and `violence`, which indicates whether or not the robbery was violent. With this information parsed out, I can also remove the `crime` variable from my data set. Finally, I look at the data set to see what I ended up with.
+
+```{r}
+transport_victims <- transport_victims %>% 
+                      #create categorical mode variable
+                        mutate( mode = factor(case_when(
+                            is.na(crime) ~ NA_character_,
+                            str_detect(crime, "METROBUS") ~ "METROBUS",
+                            str_detect(crime, "METRO") ~ "METRO",
+                            str_detect(crime, "PESERO") ~ "PESERO",
+                            str_detect(crime, "TRANSPORTE PÚBLICO") ~ "TRANSPORTE PUBLICO",
+                            str_detect(crime, "AUTOBÚS FORÁNEO") ~ "AUTOBUS FORANEO",
+                            str_detect(crime, "AUTOBUS FORANEO") ~ "AUTOBUS FORANEO",
+                            str_detect(crime, "ECOBUS") ~ "ECOBUS",
+                            str_detect(crime, "RTP") ~ "RTP",
+                            str_detect(crime, "TREN LIGERO") ~ "TREN LIGERO",
+                            str_detect(crime, "TROLEBUS") ~ "TROLEBUS",
+                            str_detect(crime, "VEHICULO") ~ "VEHICULO",
+                            str_detect(crime, "TREN SUBURBANO") ~ "TREN SUBURBANO",
+                            str_detect(crime, "TAXI") ~ "TAXI"
+                          ))) %>% 
+                    # create categorical variable for violence
+                      mutate( violence = factor(case_when(
+                        is.na(crime) ~ NA_character_,
+                        str_detect(crime, "CON VIOLENCIA") ~ "Yes",
+                        str_detect(crime, "SIN VIOLENCIA") ~ "No"
+                      ))) %>% 
+
+                    # remove crime column from the data
+                    select(-crime)
+```
+
+I  check how many data points are in each `mode` category to see if I should create a an `OTHER` category. I also note that there is a category called `TRANSPORTE PUBLICO` where I don't know the specific type. 
+
+```{r}
+ transport_victims %>% group_by(mode) %>% count() 
+```
+I will collapse the `mode` categories that have less then 100 data points and the unspecified public transport into an `OTHER` Category. I will also use this step to translate the names of these categories.
+
+```{r}
+
+transport_victims <- transport_victims %>% mutate(mode = fct_recode(mode, Metro = "METRO", 
+                                                                    Car = "VEHICULO", 
+                                                                    Pesero =  "PESERO",
+                                                                    Other = "TRANSPORTE PUBLICO", 
+                                                                    Taxi =  "TAXI", 
+                                                                    Other = "RTP", 
+                                                                    Metrobus  = "METROBUS", 
+                                                                    Other = "TREN LIGERO", 
+                                                                    Other = "TROLEBUS", 
+                                                                    Other = "AUTOBUS FORANEO",   
+                                                                    Other = "TREN SUBURBANO",     
+                                                                    Other = "ECOBUS"))
+
+# smell test for recode
+ transport_victims %>% group_by(mode) %>% count() 
+
+```
+ 
+ I recode the `sex` variable to its english equivalent
+
+```{r}
+unique(transport_victims$sex)
+transport_victims <- transport_victims %>% mutate(sex = fct_recode(sex, Male = "Masculino", Female = "Femenino", unknown = "No se especifica"))
+
+head(transport_victims)
+```
+
+I check for NAs in each column. The large amount of NAs in the `age` and `sex` variables are an important limitation for the following analysis.
+```{r}
+sapply(transport_victims, function(x) sum(is.na(x)))
+
+```
+
+To do a check on how the data is distributed over time
+```{r}
+transport_victims %>% select(mode, violence, datetime) %>% 
+                      mutate(week = week(datetime), year = year(datetime)) %>% 
+                      group_by(year) %>% count()
+```
+
+I am now in better shape to answer my research questions. In the following sections, As I explore the data, I will continue to manipulate it as needed but for now this data set is ready to go!
+
+
+
+# Analysis and visualization
+
+*How many violent and non violent-robberies were committed on each mode during the entire time period?*
+
+```{r}
+mode_levels <- transport_victims %>% group_by(mode) %>% count() %>% arrange(n) %>% pull(mode)
+transport_victims %>% select(mode, violence, datetime) %>% 
+                      mutate(mode = factor(mode, levels=rev(mode_levels))) %>% 
+                      filter(!is.na(mode)) %>% 
+                      ggplot(aes(x=mode, color = violence, fill = violence)) + 
+                      geom_bar() + 
+                      #geom_text(stat = "count", aes(label = ..count.., y = ..count..),position=position_stack(0.5)) +
+                      theme(axis.text.x = element_text(angle = 30)) +
+                      theme_minimal()
+  
+```
+
+ * How have these evolved over time? Overall and by mode. *
+ 
+
+ 
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+ transport_crimes %>%  select(transp_mode, datetime, violence) %>% 
+                    mutate(day = date(datetime)) %>% 
+                             group_by(day, violence, transp_mode) %>% count() %>% ungroup() %>% 
+                     ggplot(aes(x = day, y = n, color = violence, group = violence)) + geom_line() + 
+                    facet_wrap(transp_mode ~ .) +
+                    scale_x_date(date_breaks = "6 months", date_labels = "%b-%Y") +
+                    theme_minimal() +
+                    ylab("Number of crimes") + xlab("Day") +
+                    theme_minimal() +
+                    theme(axis.text.x = element_text(angle = 90)) 
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+#neigborhood_crimes <- transport_crimes %>% group_by(neighborhood) %>% count()
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+SPATIAL STUFF
+Finally, I convert the `lat` and `lon` variables into a geographic object so that I can use these with maps later on.
+
+```{r}
+#transport_victims <- transport_victims %>% st_as_sf(coords = c("lon", "lat"), crs = 4326)
+```
+
+```{r, warning = FALSE, message = FALSE}
+transport_crimes %>% mutate(month = as.factor(month(datetime)), year = as.factor(year(datetime))) %>% 
+                    group_by(violence, month, transp_mode) %>%
+                    count(month) %>%
+                    ggplot(aes(x= month, y = n, group = violence, color = violence))  + geom_line() + facet_wrap(~transp_mode) +
+                    theme_minimal()
+```
